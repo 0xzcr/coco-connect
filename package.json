@@ -1,0 +1,31 @@
+{
+  "name": "coco-connect",
+  "version": "1.0.0",
+  "description": "Let two Claude Code agents on the same Wi-Fi see what each other is working on.",
+  "main": "src/cli.ts",
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "bonjour-service": "^1.4.4",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/ws": "^8.18.2",
+    "typescript": "^7.0.2"
+  },
+  "bin": {
+    "coco-connect": "src/cli.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}
