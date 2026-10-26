@@ -6,7 +6,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { startDaemon } from '../src/daemon.ts';
+import { startDaemon, repoRelative } from '../src/daemon.ts';
+
+test('Windows paths are compared in git form', () => {
+  assert.equal(repoRelative('C:\\repo', 'C:\\repo\\src\\db.py', path.win32), 'src/db.py');
+  assert.equal(repoRelative('C:\\repo', 'src\\db.py', path.win32), 'src/db.py');
+  assert.equal(repoRelative('/repo', '/repo/src/db.py', path.posix), 'src/db.py');
+});
 
 function makeRepo(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'coco-'));

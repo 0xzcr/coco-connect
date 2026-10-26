@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { startDaemon } from './daemon.ts';
+import { startDaemon, lanAddresses } from './daemon.ts';
 import { runHook } from './hook.ts';
 import { runDoctor } from './doctor.ts';
 
@@ -49,6 +49,9 @@ async function start(args: string[]) {
   });
   console.log(`coco-connect running for ${values.name} in ${daemon.repoRoot}`);
   console.log(values.peer ? `Dialing ${values.peer}...` : 'Looking for your teammate on the Wi-Fi...');
+  // Printed so the teammate can use --peer without hunting for an OS-specific IP command.
+  const addresses = lanAddresses().map((address) => `${address}:${values['peer-port']}`);
+  console.log(`If they can't find you, they can run with --peer ${addresses.join(' or --peer ')}`);
 
   process.on('SIGINT', async () => {
     await daemon.close();

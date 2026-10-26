@@ -7,6 +7,7 @@
 //   4. Are the two daemons actually connected?
 
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { Bonjour } from 'bonjour-service';
 import { callDaemon } from './local.ts';
 
@@ -71,7 +72,31 @@ function parsePeer(peer: string) {
   return { host, port: port ? Number(port) : DEFAULT_PEER_PORT };
 }
 
+// Windows treats new Wi-Fi as "Public" and then blocks incoming connections and Bonjour.
+// Returns true if this Windows laptop is on a Public network. Always false on macOS.
+function windowsNetworkIsPublic(): boolean {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+  try {
+    const category = execFileSync(
+      'powershell',
+      ['-NoProfile', '-Command', '(Get-NetConnectionProfile).NetworkCategory'],
+      { encoding: 'utf8' },
+    );
+    return category.includes('Public');
+  } catch {
+    return false;
+  }
+}
+
 export async function runDoctor(peerArg?: string) {
+  if (windowsNetworkIsPublic()) {
+    console.log('0. Windows network profile');
+    fail('This Wi-Fi is set to "Public", so Windows blocks your teammate from connecting.');
+    console.log('  Fix: Settings → Network & internet → Wi-Fi → your network → Network profile type → Private.');
+  }
+
   // 1. Our own daemon.
   console.log('1. Local daemon');
   const status = await localStatus();
@@ -97,7 +122,7 @@ export async function runDoctor(peerArg?: string) {
   // Pick who to test: the --peer address if given, otherwise whoever Bonjour found.
   const target = peerArg ? parsePeer(peerArg) : others[0];
   if (!target) {
-    console.log('\nVerdict: no address to test. Ask your teammate for `ipconfig getifaddr en0` and rerun:');
+    console.log('\nVerdict: no address to test. `coco-connect start` prints your teammate\'s address. Rerun with it:');
     console.log('  coco-connect doctor --peer <their IP>');
     return 1;
   }
@@ -108,9 +133,13 @@ export async function runDoctor(peerArg?: string) {
   if (!reachable) {
     fail('Could not connect.');
     console.log('\nVerdict: the network or their firewall is blocking it.');
-    console.log(`  - Run \`ping ${target.host}\`. No replies usually means the Wi-Fi isolates devices (hostels, campuses).`);
-    console.log('  - Ping works? Their macOS firewall is blocking node, or their daemon is down.');
-    console.log('  - To confirm, retry with both laptops on one phone hotspot.');
+    console.log('  - Is their daemon running? It must be started before this check can pass.');
+    console.log('  - Their laptop is a Mac: System Settings → Network → Firewall, allow incoming connections for node.');
+    console.log('  - Their laptop is Windows: set the Wi-Fi to "Private" and allow Node.js through Windows Firewall');
+    console.log('    (running `coco-connect doctor` on it checks the profile).');
+    console.log('  - Still failing? The Wi-Fi probably isolates devices (common on hostel/campus networks).');
+    console.log('    Confirm by retrying with both laptops on one phone hotspot.');
+    console.log('  (Ping is no help here: Windows blocks it by default.)');
     return 1;
   }
   ok('Port is reachable.');

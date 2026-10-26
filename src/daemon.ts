@@ -10,6 +10,7 @@
 import http from 'node:http';
 import path from 'node:path';
 import fs from 'node:fs';
+import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Bonjour } from 'bonjour-service';
@@ -77,6 +78,25 @@ function realPath(file: string): string {
   } catch {
     return file;
   }
+}
+
+// Turns an absolute file path into the form git uses: relative to the repo root, forward slashes.
+// On Windows the hook hands us "C:\repo\src\db.py", but the peer's git reports "src/db.py".
+export function repoRelative(repoRoot: string, file: string, paths: typeof path = path): string {
+  return paths.relative(repoRoot, paths.resolve(repoRoot, file)).split(paths.sep).join('/');
+}
+
+// Windows file names ignore case, so "Auth.ts" and "auth.ts" are the same file there.
+function samePath(a: string, b: string): boolean {
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+// This laptop's Wi-Fi/LAN IPv4 addresses, so `start` can print where the teammate should dial.
+export function lanAddresses(): string[] {
+  return Object.values(os.networkInterfaces())
+    .flat()
+    .filter((iface) => iface !== undefined && iface.family === 'IPv4' && !iface.internal)
+    .map((iface) => iface!.address);
 }
 
 // Reads a JSON request body, treating an empty or broken body as {}.
@@ -173,16 +193,22 @@ export async function startDaemon(opts: DaemonOptions) {
     ws.on('error', () => {});
   }
 
-  // Connects to the teammate's daemon, and keeps retrying whenever the link drops.
-  function dial(address: string) {
-    if (closing) {
+  // Every address the teammate can be reached at. Laptops (Windows especially) often announce
+  // several, some belonging to virtual adapters that go nowhere, so we cycle through all of them.
+  let peerAddresses: string[] = [];
+
+  // Connects to the teammate's daemon, and keeps retrying, trying the next address each time.
+  function dial(attempt: number) {
+    if (closing || peerAddresses.length === 0) {
       return;
     }
-    const ws = new WebSocket(`ws://${address}`);
+    const address = peerAddresses[attempt % peerAddresses.length];
+    // Give up quickly on dead addresses instead of waiting for the OS timeout (20s+ on Windows).
+    const ws = new WebSocket(`ws://${address}`, { handshakeTimeout: RECONNECT_MS });
     ws.on('open', () => sendHello(ws));
     attach(ws, true, () => {
       if (!closing) {
-        reconnectTimer = setTimeout(() => dial(address), RECONNECT_MS);
+        reconnectTimer = setTimeout(() => dial(attempt + 1), RECONNECT_MS);
       }
     });
   }
@@ -233,9 +259,8 @@ export async function startDaemon(opts: DaemonOptions) {
         reply(200, inbox.splice(0));
       } else if (route === 'GET /check') {
         // Is the file the hook is about to edit one the peer has uncommitted changes in?
-        const file = realPath(path.resolve(repoRoot, url.searchParams.get('file') ?? ''));
-        const relative = path.relative(repoRoot, file);
-        const blocked = peer !== null && peer.files.includes(relative);
+        const relative = repoRelative(repoRoot, realPath(path.resolve(repoRoot, url.searchParams.get('file') ?? '')));
+        const blocked = peer !== null && peer.files.some((peerFile) => samePath(peerFile, relative));
         reply(200, { blocked, by: blocked ? peer!.name : null, file: relative });
       } else {
         reply(404, { error: 'unknown route' });
@@ -259,7 +284,8 @@ export async function startDaemon(opts: DaemonOptions) {
   let bonjour: Bonjour | null = null;
 
   if (opts.peer) {
-    dial(opts.peer);
+    peerAddresses = [opts.peer];
+    dial(0);
   } else if (opts.discovery) {
     bonjour = new Bonjour();
     bonjour.publish({
@@ -273,16 +299,21 @@ export async function startDaemon(opts: DaemonOptions) {
     bonjour.find({ type: SERVICE_TYPE }, (service) => {
       const theirName = service.txt?.name;
       // Only the alphabetically-first name dials, so the pair never opens two sockets.
-      if (!theirName || dialing || opts.name >= theirName) {
+      if (!theirName || opts.name >= theirName) {
         return;
       }
-      const ipv4 = (service.addresses ?? []).find((address) => address.includes('.'));
-      const host = ipv4 ?? service.referer?.address;
-      if (!host) {
+      // The address the announcement actually came from is the most likely to work, so try it first.
+      const ipv4s = (service.addresses ?? []).filter((address) => address.includes('.'));
+      const hosts = [...new Set([service.referer?.address, ...ipv4s].filter((host) => host && host.includes('.')))];
+      if (hosts.length === 0) {
         return;
       }
-      dialing = true;
-      dial(`${host}:${service.port}`);
+      // Re-announcements replace the list, so a teammate whose IP changed is still found.
+      peerAddresses = hosts.map((host) => `${host}:${service.port}`);
+      if (!dialing) {
+        dialing = true;
+        dial(0);
+      }
     });
   }
 

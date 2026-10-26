@@ -27,16 +27,21 @@ Needs Node 22.18 or newer.
    ```sh
    node ~/coco-connect/src/cli.ts start --name umang
    ```
-   The daemons find each other with Bonjour. If your Wi-Fi blocks that, one of you passes the
-   other's IP (`ipconfig getifaddr en0`): `--peer 192.168.1.20:7778`.
-   macOS asks once to allow incoming connections. Click Allow.
+   The daemons find each other with Bonjour, Mac or Windows in any mix. If your Wi-Fi blocks that,
+   `start` prints your address; the other person adds it as `--peer 192.168.1.20:7778`.
+   - **macOS** asks once to allow incoming connections. Click Allow.
+   - **Windows**: set the Wi-Fi to *Private* (Settings → Network & internet → Wi-Fi → your network),
+     and click Allow when Windows Firewall asks about Node.js. On a *Public* network Windows blocks
+     the connection. `coco-connect doctor` checks this for you.
 
 4. **Add the MCP tools** to Claude Code:
    ```sh
    claude mcp add coco -- node ~/coco-connect/src/cli.ts mcp
    ```
 
-5. **Add the hooks** to the shared repo's `.claude/settings.json`:
+5. **Add the hooks** to the shared repo's `.claude/settings.json`. On Windows, replace
+   `~/coco-connect` with the full path using forward slashes, e.g. `C:/Users/you/coco-connect`
+   (`~` isn't expanded there). Do the same in step 4.
    ```json
    {
      "hooks": {
