@@ -213,7 +213,7 @@ test('a fifth person is turned away', async () => {
     // Any member can invite, not just the host.
     const { code } = await nodes[1].pair();
     await dee.join(code, undefined, hostOf(nodes[1]));
-    await assert.rejects(eve.join(code, undefined, hostOf(nodes[1])), /(already has 4|no open invite)/);
+    await assert.rejects(eve.join(code, undefined, hostOf(nodes[1])), /already has 4 people/);
     assert.equal(eve.inRoom, false);
   } finally {
     await closeAll([...nodes, dee, eve]);

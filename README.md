@@ -95,9 +95,17 @@ Windows network profile and the macOS permission, and says what to fix.
 npm install
 npm test               # 4 nodes on localhost, hooks, the MCP server, the plugin files
 COCO_TEST_BONJOUR=1 npm test   # also real Bonjour on this machine's network
+npm run test:lab       # the network lab (needs Docker), a few minutes
 npm run typecheck
 npm run build          # rebuilds dist/coco.mjs; commit it (a test fails if it's stale)
 claude --plugin-dir .  # try the plugin from this checkout
 ```
 
 Development needs Node 22.18+ (it runs the TypeScript directly). The built plugin runs on Node 20+.
+
+**The network lab** (`test/lab.test.ts`) runs each laptop as a Docker container with its own
+address, on one shared virtual Wi-Fi with real Bonjour, and drives the real bundle over MCP. It
+recreates what goes wrong between Macs and Windows PCs: Windows Firewall before "Allow" (or a
+Public network), the WSL adapter, macOS Local Network denied, guest Wi-Fi isolation, routers that
+drop Bonjour, slow Wi-Fi, sleep and switching Wi-Fi. Containers are Linux, so Windows-only code is
+tested on real Windows and macOS by CI (`.github/workflows/test.yml`), which also runs the lab.

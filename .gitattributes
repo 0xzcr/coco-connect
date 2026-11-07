@@ -1,0 +1,2 @@
+# Keep line endings LF on every OS, so the bundle and skill files are byte-identical on Windows.
+* text=auto eol=lf

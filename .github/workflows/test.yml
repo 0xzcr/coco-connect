@@ -1,0 +1,45 @@
+name: test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The whole suite on real macOS and Windows: paths, line endings, hooks, the MCP server, Bonjour.
+  os:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Bonjour on this machine's real network adapters
+        run: node --test test/bonjour.test.ts
+        env:
+          COCO_TEST_BONJOUR: '1'
+      - name: The built plugin starts on Node 20, the oldest it supports
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node dist/coco.mjs version
+
+  # The network lab: laptops as containers with Mac and Windows network conditions.
+  lab:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:lab

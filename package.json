@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node scripts/build.ts",
     "test": "node --test --test-concurrency=1 test/*.test.ts",
+    "test:lab": "COCO_TEST_LAB=1 node --test test/lab.test.ts",
     "typecheck": "tsc"
   },
   "keywords": [],

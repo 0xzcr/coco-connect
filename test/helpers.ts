@@ -37,15 +37,24 @@ export function cloneOf(origin: string): string {
   return dir;
 }
 
-// Polls until `condition` holds, or fails after `timeoutMs`.
-export async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 5000, what = 'condition') {
+// Polls every `everyMs` until `condition` holds, or fails after `timeoutMs`.
+export async function waitFor(
+  condition: () => boolean | Promise<boolean>,
+  timeoutMs = 5000,
+  what = 'condition',
+  everyMs = 50,
+) {
   const deadline = Date.now() + timeoutMs;
   while (!(await condition())) {
     if (Date.now() > deadline) {
       throw new Error(`timed out waiting for ${what}`);
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await sleep(everyMs);
   }
+}
+
+export function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // A node that only talks over 127.0.0.1, without Bonjour.

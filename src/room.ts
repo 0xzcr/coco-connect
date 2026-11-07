@@ -408,7 +408,15 @@ export class CocoNode {
   }
 
   private inviteRefusal(): string | null {
-    if (this.room === null || this.invite === null) {
+    if (this.room === null) {
+      return 'no-invite';
+    }
+    // Checked before the invite: admitting the 4th person closes it, and a fifth should hear
+    // "the room is full", not "ask for a new code".
+    if (this.memberCount() >= MAX_MEMBERS) {
+      return 'room-full';
+    }
+    if (this.invite === null) {
       return 'no-invite';
     }
     if (Date.now() > this.invite.expiresAt) {
@@ -416,9 +424,6 @@ export class CocoNode {
     }
     if (this.invite.wrongCodes >= MAX_WRONG_CODES) {
       return 'locked';
-    }
-    if (this.memberCount() >= MAX_MEMBERS) {
-      return 'room-full';
     }
     return null;
   }

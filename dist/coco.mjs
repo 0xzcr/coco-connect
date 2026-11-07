@@ -48866,7 +48866,13 @@ var init_room = __esm({
         return lastOctet(first.split(":")[0]);
       }
       inviteRefusal() {
-        if (this.room === null || this.invite === null) {
+        if (this.room === null) {
+          return "no-invite";
+        }
+        if (this.memberCount() >= MAX_MEMBERS) {
+          return "room-full";
+        }
+        if (this.invite === null) {
           return "no-invite";
         }
         if (Date.now() > this.invite.expiresAt) {
@@ -48874,9 +48880,6 @@ var init_room = __esm({
         }
         if (this.invite.wrongCodes >= MAX_WRONG_CODES) {
           return "locked";
-        }
-        if (this.memberCount() >= MAX_MEMBERS) {
-          return "room-full";
         }
         return null;
       }
