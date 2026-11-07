@@ -7,7 +7,8 @@ import path from 'node:path';
 import { CocoNode, type NodeOptions } from '../src/room.ts';
 
 export function tempDir(prefix: string): string {
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  // .native, like the plugin: on Windows it expands short names such as C:\Users\RUNNER~1.
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 }
 
 export function git(cwd: string, args: string[]): string {
