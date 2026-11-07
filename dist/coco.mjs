@@ -47983,7 +47983,7 @@ async function git(cwd, args) {
 async function findRepoRoot(dir) {
   try {
     const root = (await git(dir, ["rev-parse", "--show-toplevel"])).trim();
-    return fs2.realpathSync(root);
+    return fs2.realpathSync.native(root);
   } catch {
     return null;
   }
@@ -48593,7 +48593,7 @@ function realPath(file2) {
     existing = parent;
   }
   try {
-    return path2.join(fs3.realpathSync(existing), ...missingParts);
+    return path2.join(fs3.realpathSync.native(existing), ...missingParts);
   } catch {
     return path2.resolve(file2);
   }

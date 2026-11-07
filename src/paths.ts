@@ -6,8 +6,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 // Resolves symlinks in the deepest folder of `file` that exists, so macOS paths like
-// /tmp/x and /private/tmp/x compare equal. The file itself, and even its folder, may not exist
-// yet when the agent is about to create them.
+// /tmp/x and /private/tmp/x compare equal, and Windows short names like C:\Users\RUNNER~1
+// compare equal to the long ones git reports. The file itself, and even its folder, may not
+// exist yet when the agent is about to create them.
 export function realPath(file: string): string {
   const missingParts: string[] = [];
   let existing = path.resolve(file);
@@ -23,7 +24,8 @@ export function realPath(file: string): string {
   }
 
   try {
-    return path.join(fs.realpathSync(existing), ...missingParts);
+    // Only .native expands Windows short names; the plain version keeps them as given.
+    return path.join(fs.realpathSync.native(existing), ...missingParts);
   } catch {
     return path.resolve(file);
   }

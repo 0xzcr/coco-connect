@@ -31,7 +31,8 @@ async function git(cwd: string, args: string[]): Promise<string> {
 export async function findRepoRoot(dir: string): Promise<string | null> {
   try {
     const root = (await git(dir, ['rev-parse', '--show-toplevel'])).trim();
-    return fs.realpathSync(root);
+    // .native also expands Windows short names (C:\Users\RUNNER~1), like realPath() does.
+    return fs.realpathSync.native(root);
   } catch {
     return null;
   }
