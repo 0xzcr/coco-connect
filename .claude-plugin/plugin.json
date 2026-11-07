@@ -1,0 +1,11 @@
+{
+  "name": "coco-connect",
+  "version": "2.0.0",
+  "description": "Connect up to 4 Claude Code sessions on the same Wi-Fi with a pairing code: see each other's tasks and uncommitted files, message each other, and never edit the same file at once.",
+  "author": {
+    "name": "0xzcr"
+  },
+  "repository": "https://github.com/0xzcr/coco-connect",
+  "license": "ISC",
+  "keywords": ["collaboration", "pairing", "lan", "mcp"]
+}

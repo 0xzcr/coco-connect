@@ -1,10 +1,11 @@
 {
   "name": "coco-connect",
-  "version": "1.0.0",
-  "description": "Let two Claude Code agents on the same Wi-Fi see what each other is working on.",
-  "main": "src/cli.ts",
+  "version": "2.0.0",
+  "description": "Connect up to 4 Claude Code sessions on the same Wi-Fi with a pairing code.",
+  "main": "dist/coco.mjs",
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "build": "node scripts/build.ts",
+    "test": "node --test --test-concurrency=1 test/*.test.ts",
     "typecheck": "tsc"
   },
   "keywords": [],
@@ -13,6 +14,7 @@
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "@noble/curves": "^2.4.0",
     "bonjour-service": "^1.4.4",
     "ws": "^8.22.0",
     "zod": "^4.6.7"
@@ -20,12 +22,20 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@types/ws": "^8.18.2",
+    "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
   },
   "bin": {
-    "coco-connect": "src/cli.ts"
+    "coco-connect": "dist/coco.mjs"
   },
   "engines": {
-    "node": ">=22.18"
-  }
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "hooks",
+    ".claude-plugin",
+    ".mcp.json"
+  ]
 }

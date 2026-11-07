@@ -1,71 +1,119 @@
-// Claude Code hooks. Claude Code runs `coco-connect hook <kind>` and passes event JSON on stdin.
+// Claude Code hooks. Claude Code runs `coco-connect hook <kind>` with event JSON on stdin.
 //
-//   pre      PreToolUse on edits: blocks the edit if the teammate has uncommitted changes in that file.
-//   post     PostToolUse on edits: tells the daemon to re-read git and update the teammate.
-//   session  SessionStart: prints the teammate's status and unread messages into the agent's context.
+//   pre     PreToolUse on file edits: blocks the edit if an online teammate in the same repo has
+//           uncommitted changes in that file.
+//   post    PostToolUse on edits and Bash: re-reads git so teammates see the change, and hands
+//           the agent any new teammate messages.
+//   prompt  UserPromptSubmit: hands the agent any new teammate messages.
 //
-// Every hook fails open: if the daemon is down, the agent carries on as if coco-connect weren't there.
+// Every hook fails open: if anything goes wrong (no room, node gone, timeout), the agent
+// carries on as if coco-connect weren't installed. Plugin hooks run in every project, so the
+// common case, "this session isn't in a room", has to be fast: one missing file and we're done.
 
-import { callDaemon } from './local.ts';
+import { callSession } from './api.ts';
+import { findSession, type SessionEntry } from './registry.ts';
+import { formatInbox, type InboxMessage } from './text.ts';
 
-async function readStdin(): Promise<string> {
+const MAX_STDIN_BYTES = 4 * 1024 * 1024;
+const CHECK_TIMEOUT_MS = 1500;
+const REFRESH_TIMEOUT_MS = 3000;
+
+type HookInput = Record<string, unknown>;
+
+async function readInput(): Promise<HookInput> {
+  if (process.stdin.isTTY) {
+    return {};
+  }
+
   const chunks: Buffer[] = [];
+  let size = 0;
   for await (const chunk of process.stdin) {
+    size += (chunk as Buffer).length;
+    if (size > MAX_STDIN_BYTES) {
+      return {};
+    }
     chunks.push(chunk as Buffer);
   }
-  return Buffer.concat(chunks).toString();
+
+  try {
+    const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
 }
 
-async function preEdit(): Promise<number> {
-  const input = JSON.parse((await readStdin()) || '{}');
-  const file = input.tool_input?.file_path ?? input.tool_input?.notebook_path;
-  if (!file) {
+function findOwnSession(input: HookInput): SessionEntry | null {
+  const sessionId = typeof input.session_id === 'string' ? input.session_id : process.env.CLAUDE_CODE_SESSION_ID;
+  return findSession({ sessionId, claudePid: Number(process.env.CLAUDE_PID) });
+}
+
+// The path the edit tool is about to write.
+function targetFile(input: HookInput): string | null {
+  const toolInput = (input.tool_input ?? {}) as Record<string, unknown>;
+  const file = toolInput.file_path ?? toolInput.notebook_path;
+  return typeof file === 'string' && file !== '' ? file : null;
+}
+
+async function preEdit(entry: SessionEntry, input: HookInput): Promise<number> {
+  const file = targetFile(input);
+  if (file === null) {
     return 0;
   }
 
-  const { data } = await callDaemon('GET', `/check?file=${encodeURIComponent(file)}`);
-  if (!data.blocked) {
+  const result = await callSession(entry, 'GET', `/check?file=${encodeURIComponent(file)}`, CHECK_TIMEOUT_MS);
+  if (!result.blocked) {
     return 0;
   }
 
-  // Exit code 2 blocks the tool call, and Claude Code shows stderr to the agent.
+  // Exit code 2 blocks the tool call, and Claude Code shows stderr to the agent as the reason.
+  const who = (result.by as string[]).join(' and ');
   process.stderr.write(
-    `coco-connect: ${data.by}'s agent has uncommitted changes in ${data.file}. ` +
-      `Use the send_message tool to coordinate with them before editing it.`,
+    `coco-connect: ${who} has uncommitted changes in ${result.file}, so editing it now would conflict. ` +
+      `Don't work around this. Use the send_message tool to ask ${who} about it, or carry on with other files. ` +
+      'The block lifts once they commit or revert the file.',
   );
   return 2;
 }
 
-async function postEdit(): Promise<number> {
-  await callDaemon('POST', '/refresh');
+// Prints new messages as extra context for the agent, in the JSON form Claude Code expects.
+async function deliverInbox(entry: SessionEntry, eventName: string) {
+  const messages = (await callSession(entry, 'GET', '/inbox', CHECK_TIMEOUT_MS)) as InboxMessage[];
+  if (messages.length === 0) {
+    return;
+  }
+  const output = { hookSpecificOutput: { hookEventName: eventName, additionalContext: formatInbox(messages) } };
+  process.stdout.write(JSON.stringify(output));
+}
+
+async function postTool(entry: SessionEntry): Promise<number> {
+  await callSession(entry, 'POST', '/refresh', REFRESH_TIMEOUT_MS);
+  await deliverInbox(entry, 'PostToolUse');
   return 0;
 }
 
-async function sessionStart(): Promise<number> {
-  const status = (await callDaemon('GET', '/status')).data;
-  const inbox = (await callDaemon('GET', '/inbox')).data;
-
-  // SessionStart stdout is added to the agent's context.
-  if (!status.connected) {
-    console.log('coco-connect: teammate is not connected right now.');
-    return 0;
-  }
-  const peer = status.peer;
-  console.log(`coco-connect: ${peer.name}'s agent is on branch "${peer.branch}".`);
-  console.log(`Their task: ${peer.task || '(not announced)'}`);
-  console.log(`Files they have uncommitted changes in: ${peer.files.join(', ') || 'none'}`);
-  for (const message of inbox) {
-    console.log(`Message from ${message.from}: ${message.text}`);
-  }
-  console.log('Call the announce tool with your task before starting work.');
+async function promptSubmit(entry: SessionEntry): Promise<number> {
+  await deliverInbox(entry, 'UserPromptSubmit');
   return 0;
 }
 
-export async function runHook(kind: string): Promise<number> {
+export async function runHook(kind: string | undefined): Promise<number> {
   try {
-    if (kind === 'pre') return await preEdit();
-    if (kind === 'post') return await postEdit();
-    if (kind === 'session') return await sessionStart();
+    const input = await readInput();
+    const entry = findOwnSession(input);
+    if (entry === null) {
+      return 0;
+    }
+
+    if (kind === 'pre') {
+      return await preEdit(entry, input);
+    }
+    if (kind === 'post') {
+      return await postTool(entry);
+    }
+    if (kind === 'prompt') {
+      return await promptSubmit(entry);
+    }
     return 0;
   } catch {
     return 0;

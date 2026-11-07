@@ -1,100 +1,103 @@
 # coco-connect
 
-Two people, two Claude Code agents, one repo. coco-connect lets each agent see what the other is
-working on (branch, task, files with uncommitted changes), message it, and stops one agent from editing
-a file the other has uncommitted changes in. It runs over your Wi-Fi, laptop to laptop.
-No server, no database.
+Up to four people, four Claude Code sessions, one repo. coco-connect is a Claude Code plugin that
+pairs sessions on the same Wi-Fi with a short code. The agents then see what each other is
+working on (branch, task, files with uncommitted changes), message each other, and are stopped
+from editing a file a teammate has uncommitted changes in. Mac and Windows, in any mix.
+No server, no account, nothing to run by hand.
 
 ```
-Claude Code ──localhost──► daemon ◄══ WebSocket over Wi-Fi ══► daemon ◄──localhost── Claude Code
+Claude Code ── MCP + hooks ── coco node ◄══ encrypted WebSocket over Wi-Fi ══► coco node ── Claude Code
+                              (one per session, lives and dies with it)
 ```
 
-## Setup (do this on both laptops)
+## Install
 
-Needs Node 22.18 or newer.
+Needs Node.js 20 or newer on `PATH` (`node --version`). In Claude Code:
 
-1. **Install**
-   ```sh
-   git clone <this repo> ~/coco-connect && cd ~/coco-connect && npm install
-   ```
-
-2. **Shared secret.** Put the same secret on both machines:
-   ```sh
-   mkdir -p ~/.coco-connect && echo 'pick-something-long' > ~/.coco-connect/secret
-   ```
-
-3. **Start the daemon** inside the repo you're both working on. Use different names.
-   ```sh
-   node ~/coco-connect/src/cli.ts start --name umang
-   ```
-   The daemons find each other with Bonjour, Mac or Windows in any mix. If your Wi-Fi blocks that,
-   `start` prints your address; the other person adds it as `--peer 192.168.1.20:7778`.
-   - **macOS** asks once to allow incoming connections. Click Allow.
-   - **Windows**: set the Wi-Fi to *Private* (Settings → Network & internet → Wi-Fi → your network),
-     and click Allow when Windows Firewall asks about Node.js. On a *Public* network Windows blocks
-     the connection. `coco-connect doctor` checks this for you.
-
-4. **Add the MCP tools** to Claude Code:
-   ```sh
-   claude mcp add coco -- node ~/coco-connect/src/cli.ts mcp
-   ```
-
-5. **Add the hooks** to the shared repo's `.claude/settings.json`. On Windows, replace
-   `~/coco-connect` with the full path using forward slashes, e.g. `C:/Users/you/coco-connect`
-   (`~` isn't expanded there). Do the same in step 4.
-   ```json
-   {
-     "hooks": {
-       "PreToolUse": [
-         { "matcher": "Edit|Write|MultiEdit|NotebookEdit",
-           "hooks": [{ "type": "command", "command": "node ~/coco-connect/src/cli.ts hook pre" }] }
-       ],
-       "PostToolUse": [
-         { "matcher": "Edit|Write|MultiEdit|NotebookEdit",
-           "hooks": [{ "type": "command", "command": "node ~/coco-connect/src/cli.ts hook post" }] }
-       ],
-       "SessionStart": [
-         { "hooks": [{ "type": "command", "command": "node ~/coco-connect/src/cli.ts hook session" }] }
-       ]
-     }
-   }
-   ```
-
-6. **Tell the agents** by adding to the repo's `CLAUDE.md`:
-   > Before starting work, call `peer_status` and `announce` your task. Check `read_inbox` between steps.
-   > If an edit is blocked by coco-connect, `send_message` the teammate instead of working around it.
-
-## Tools the agent gets
-
-| Tool | What it does |
-|---|---|
-| `announce(task)` | Tells the teammate's agent what you're working on |
-| `peer_status()` | Teammate's branch, task, and files with uncommitted changes |
-| `send_message(text)` | Sends a note to the teammate's agent |
-| `read_inbox()` | Reads and clears notes from the teammate |
-
-## Not connecting?
-
-```sh
-node ~/coco-connect/src/cli.ts doctor                    # uses Bonjour to find the teammate
-node ~/coco-connect/src/cli.ts doctor --peer 192.168.1.20
+```
+/plugin install coco-connect --marketplace 0xzcr/coco-connect
 ```
 
-It checks your daemon, Bonjour, the network path, and the handshake in that order, and tells you
-which one failed. Hostel and campus Wi-Fi usually fail the network step (client isolation): use a
-phone hotspot.
+Or, on older Claude Code versions: `/plugin marketplace add 0xzcr/coco-connect`, then
+`/plugin install coco-connect@coco-connect`. Restart Claude Code afterwards.
+
+## Use
+
+Just ask Claude.
+
+- **Host:** "start a coco room". Claude shows a code like `20-482913`. Read it out.
+- **Everyone else:** "join coco code 20-482913".
+- Then work as usual. Agents announce their tasks, and an edit to a file a teammate is changing
+  is blocked with a note to coordinate. Messages show up on their own, e.g. "tell Sam's agent
+  I'm done with auth.ts".
+- "who's working on what?" shows the room. "leave coco" leaves it, and so does closing Claude Code.
+
+If the code alone can't find the host (some networks block discovery), the host's screen also
+shows an address like `192.168.1.20:7778`: "join coco code 20-482913, host 192.168.1.20".
+
+## First-time network setup
+
+- **macOS:** allow incoming connections if asked. On macOS 15+, allow *Local Network* access
+  for the app running Claude Code (Terminal, iTerm, VS Code...) when asked. If you said no:
+  System Settings → Privacy & Security → Local Network.
+- **Windows:** set the Wi-Fi to *Private* (Settings → Network & internet → Wi-Fi → your network)
+  and click Allow when Windows Firewall asks about Node.js. On a *Public* network Windows blocks
+  teammates.
+- **Campus, hotel or office guest Wi-Fi** often stops laptops from talking to each other. Use a
+  phone hotspot.
+
+Not connecting? Ask Claude to "diagnose coco". It checks addresses, Bonjour, firewalls, the
+Windows network profile and the macOS permission, and says what to fix.
+
+## How it works
+
+- **One node per session.** The plugin's MCP server *is* the node: Claude Code starts it with
+  the session and stops it at the end. It opens no network port until you pair or join.
+- **Finding each other.** Bonjour (mDNS) announces on every network adapter, because Windows
+  often sends multicast out of a virtual adapter (WSL, Hyper-V, VPN) and a Mac never hears it.
+  The number before the dash in the code is the host's last IP number, so a joiner can find
+  the host even where Bonjour is blocked. A full address always works.
+- **Pairing.** The six digits go through CPace, a password-authenticated key exchange: someone
+  listening on the Wi-Fi learns nothing, and someone faking the host gets one guess per try. The
+  host allows 5 wrong guesses per code, and codes expire after 10 minutes. On success the host
+  hands over a random 256-bit room key.
+- **Links.** Members connect to each other directly, proving they hold the room key with X25519 +
+  HMAC. Everything after that is AES-256-GCM. Both sides dial, so a pair connects if either
+  direction works (a Windows laptop that refuses incoming connections can still dial out).
+  If two laptops can't reach each other at all, state and messages are passed through a third.
+- **What's shared.** Your name, branch, announced task, the paths of files with uncommitted
+  changes (from `git status`), and messages. Never file contents.
+- **Blocking.** A PreToolUse hook on Edit/Write/MultiEdit/NotebookEdit asks the node whether
+  an online teammate *in the same repo* has uncommitted changes in that file. The repo counts as
+  the same if the clones share a first commit or their origin URLs match. Files that differ only
+  in line endings (CRLF vs LF) are not reported, so a Windows `autocrlf` mix-up can't block the
+  whole repo.
+- **Messages** are delivered once and retried until acknowledged. A teammate who drops off
+  (sleep, Wi-Fi change) gets them on reconnecting, for up to an hour. They reach the agent
+  through hooks, after tool calls and on each prompt, wrapped so the agent treats them as notes
+  from people, not instructions.
 
 ## Good to know
 
-- A file stays blocked until the teammate commits or reverts it.
-- If the daemon or the teammate is offline, nothing is blocked and agents work normally.
-- Messages sent while the teammate is offline are lost (nothing is stored).
+- A file stays blocked until the teammate commits or reverts it, or goes offline.
+- Edits made through Bash aren't blocked; the skill tells agents not to use Bash for those files.
 - It blocks file conflicts, not logic conflicts. Keep using branches and PRs.
-- Local ports: 7777 (hooks/MCP, localhost only, override with `COCO_PORT`), 7778 (Wi-Fi).
+- Rooms are in memory. Restarting a session means joining again with a fresh code.
+- Any member can make a new code for the room. Rooms hold up to 4 people.
+- To hear from teammates while Claude is idle, ask it to "listen for coco messages". It runs a
+  background command that wakes it when a message arrives.
+- `COCO_DISCOVERY=0` turns Bonjour off (joining then needs the host address).
 
 ## Development
 
 ```sh
-npm test         # two daemons on localhost
+npm install
+npm test               # 4 nodes on localhost, hooks, the MCP server, the plugin files
+COCO_TEST_BONJOUR=1 npm test   # also real Bonjour on this machine's network
 npm run typecheck
+npm run build          # rebuilds dist/coco.mjs; commit it (a test fails if it's stale)
+claude --plugin-dir .  # try the plugin from this checkout
 ```
+
+Development needs Node 22.18+ (it runs the TypeScript directly). The built plugin runs on Node 20+.

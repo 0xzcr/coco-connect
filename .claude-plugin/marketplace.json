@@ -1,0 +1,16 @@
+{
+  "name": "coco-connect",
+  "owner": {
+    "name": "0xzcr"
+  },
+  "metadata": {
+    "description": "coco-connect: pair Claude Code sessions on the same Wi-Fi."
+  },
+  "plugins": [
+    {
+      "name": "coco-connect",
+      "source": "./",
+      "description": "Connect up to 4 Claude Code sessions on the same Wi-Fi with a pairing code."
+    }
+  ]
+}

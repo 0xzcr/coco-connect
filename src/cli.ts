@@ -1,76 +1,69 @@
-#!/usr/bin/env node
-// Entry point.
-//   coco-connect start --name <you> [--peer host:port] [--repo dir]
-//   coco-connect doctor [--peer host]     (find out why the laptops aren't connecting)
-//   coco-connect mcp                      (run by Claude Code)
-//   coco-connect hook pre|post|session    (run by Claude Code)
+// Entry point. Claude Code runs the first two; the agent runs `listen`.
+//
+//   coco-connect mcp                        the per-session node + MCP tools (started by the plugin)
+//   coco-connect hook pre|post|prompt       Claude Code hooks (started by the plugin)
+//   coco-connect listen [--minutes N]       wait for a teammate's message, print it, exit
+//   coco-connect version
 
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { startDaemon, lanAddresses } from './daemon.ts';
+import { MAX_WAIT_MS, callSession } from './api.ts';
 import { runHook } from './hook.ts';
-import { runDoctor } from './doctor.ts';
+import { findSession } from './registry.ts';
+import { formatInbox, type InboxMessage } from './text.ts';
+import { VERSION } from './version.ts';
 
-// The shared secret comes from COCO_SECRET, or from ~/.coco-connect/secret.
-function readSecret(): string {
-  const secretFile = path.join(os.homedir(), '.coco-connect', 'secret');
-  const secret = process.env.COCO_SECRET ?? (fs.existsSync(secretFile) ? fs.readFileSync(secretFile, 'utf8') : '');
-  if (secret.trim() === '') {
-    throw new Error(`No shared secret. Put the same secret in ${secretFile} on both laptops.`);
-  }
-  return secret.trim();
-}
+const DEFAULT_LISTEN_MINUTES = 30;
 
-async function start(args: string[]) {
-  const { values } = parseArgs({
-    args,
-    options: {
-      name: { type: 'string' },
-      peer: { type: 'string' },
-      repo: { type: 'string', default: process.cwd() },
-      port: { type: 'string', default: process.env.COCO_PORT ?? '7777' },
-      'peer-port': { type: 'string', default: '7778' },
-    },
+// Waits for messages via the session's node. Meant to run as a background command: when it
+// exits, Claude Code wakes the agent with its output.
+async function listen(args: string[]): Promise<number> {
+  const { values } = parseArgs({ args, options: { minutes: { type: 'string' } } });
+  const minutes = Number(values.minutes ?? DEFAULT_LISTEN_MINUTES);
+  const totalMs = Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : DEFAULT_LISTEN_MINUTES * 60_000;
+
+  const entry = findSession({
+    sessionId: process.env.CLAUDE_CODE_SESSION_ID,
+    claudePid: Number(process.env.CLAUDE_PID),
   });
-  if (!values.name) {
-    throw new Error('--name is required, and must differ from your teammate\'s.');
+  if (entry === null) {
+    console.log('coco-connect: this session is not in a coco room, so there is nothing to listen for.');
+    return 1;
   }
 
-  const daemon = await startDaemon({
-    name: values.name,
-    secret: readSecret(),
-    repo: values.repo,
-    localPort: Number(values.port),
-    peerPort: Number(values['peer-port']),
-    peer: values.peer,
-    discovery: true,
-  });
-  console.log(`coco-connect running for ${values.name} in ${daemon.repoRoot}`);
-  console.log(values.peer ? `Dialing ${values.peer}...` : 'Looking for your teammate on the Wi-Fi...');
-  // Printed so the teammate can use --peer without hunting for an OS-specific IP command.
-  const addresses = lanAddresses().map((address) => `${address}:${values['peer-port']}`);
-  console.log(`If they can't find you, they can run with --peer ${addresses.join(' or --peer ')}`);
+  const deadline = Date.now() + totalMs;
+  while (Date.now() < deadline) {
+    const waitMs = Math.min(MAX_WAIT_MS, deadline - Date.now());
 
-  process.on('SIGINT', async () => {
-    await daemon.close();
-    process.exit(0);
-  });
+    let messages: InboxMessage[];
+    try {
+      messages = await callSession(entry, 'GET', `/wait?ms=${waitMs}`, waitMs + 10_000);
+    } catch {
+      console.log('coco-connect: lost contact with this session\'s coco-connect (the session ended or left the room).');
+      return 1;
+    }
+
+    if (messages.length > 0) {
+      console.log(formatInbox(messages));
+      return 0;
+    }
+  }
+
+  console.log(`coco-connect: no messages from teammates in the last ${Math.round(totalMs / 60_000)} minutes.`);
+  return 0;
 }
 
 const [command, ...rest] = process.argv.slice(2);
 
-if (command === 'start') {
-  await start(rest);
-} else if (command === 'mcp') {
-  await import('./mcp.ts');
+if (command === 'mcp') {
+  const { runMcp } = await import('./mcp.ts');
+  await runMcp();
 } else if (command === 'hook') {
   process.exitCode = await runHook(rest[0]);
-} else if (command === 'doctor') {
-  const { values } = parseArgs({ args: rest, options: { peer: { type: 'string' } } });
-  process.exitCode = await runDoctor(values.peer);
+} else if (command === 'listen') {
+  process.exitCode = await listen(rest);
+} else if (command === 'version') {
+  console.log(VERSION);
 } else {
-  console.log('usage: coco-connect start --name <you> [--peer host:port] | doctor [--peer host] | mcp | hook pre|post|session');
+  console.log('usage: coco-connect mcp | hook pre|post|prompt | listen [--minutes N] | version');
   process.exitCode = 1;
 }
