@@ -6,6 +6,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { test } from 'node:test';
 import { WebSocket } from 'ws';
+import type { Sighting } from '../src/discovery.ts';
 import { DEFAULT_LAN_PORT, type CocoNode } from '../src/room.ts';
 import { cloneOf, closeAll, git, hostOf, localNode, makeOrigin, waitFor } from './helpers.ts';
 
@@ -247,6 +248,12 @@ test('leaving tells everyone, and the leaver stops blocking', async () => {
     assert.equal(ana.check('auth.ts').blocked, false);
     assert.equal(cy.inRoom, false);
     assert.equal(cy.port, 0);
+
+    // The same session can come back: teammates remember who left, so it rejoins under a new id.
+    const { code } = await ana.pair();
+    await cy.join(code, undefined, hostOf(ana));
+    await waitFor(() => nodes.every((node) => directLinks(node) === 2), 8000, 'cy back in the mesh');
+    await waitFor(() => ana.check('auth.ts').blocked, 5000, 'cy blocking again');
   } finally {
     await closeAll(nodes);
   }
@@ -288,6 +295,38 @@ test('when two laptops cannot reach each other, state and messages go through a 
     await waitFor(() => left.status().pendingMessages === 0, 5000, 'the acknowledgement');
   } finally {
     await closeAll([hub, left, right]);
+  }
+});
+
+// Bonjour re-reports teammates every few seconds, and each report resets the dial backoff. A
+// teammate whose only working address is 4th in the list (VM and VPN adapters before it) must
+// still be reached: the address being tried has its own counter, which those resets don't touch.
+test('a working address 4th in the list is still reached while Bonjour keeps reporting the teammate', async () => {
+  const origin = makeOrigin();
+  const deadEnds = ['192.0.2.1', '192.0.2.2', '192.0.2.3'];
+  const ben = await localNode('ben', cloneOf(origin), { hosts: [...deadEnds, '127.0.0.1'] });
+  const ana = await localNode('ana', cloneOf(origin), { canDial: (to) => to.startsWith('127.0.0.1:') });
+
+  // Bonjour is off in tests, so play its part by reporting ben to ana over and over.
+  const internals = ana as unknown as { room: { tag: string } | null; onSighting(sighting: Sighting): void };
+  let reporting: NodeJS.Timeout | undefined;
+  try {
+    const { code } = await ben.pair();
+    await ana.join(code, undefined, hostOf(ben));
+
+    const sighting: Sighting = {
+      memberId: ben.memberId,
+      name: 'ben',
+      roomTag: internals.room?.tag ?? '',
+      invite: false,
+      addresses: [...deadEnds, '127.0.0.1'].map((host) => `${host}:${ben.port}`),
+    };
+    reporting = setInterval(() => internals.onSighting(sighting), 200);
+
+    await waitFor(() => directLinks(ana) === 1, 15_000, "ana to reach ben's 4th address");
+  } finally {
+    clearInterval(reporting);
+    await closeAll([ana, ben]);
   }
 });
 

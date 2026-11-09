@@ -214,7 +214,12 @@ async function handle(node2, token, request, response) {
   if (route === "GET /wait") {
     const asked = Number(url2.searchParams.get("ms") ?? MAX_WAIT_MS);
     const ms = Number.isFinite(asked) ? Math.min(Math.max(asked, 0), MAX_WAIT_MS) : MAX_WAIT_MS;
-    reply(response, 200, await node2.waitForMessages(ms));
+    const messages = await node2.waitForMessages(ms);
+    if (request.socket.destroyed) {
+      node2.unreadInbox(messages);
+      return;
+    }
+    reply(response, 200, messages);
     return;
   }
   reply(response, 404, { error: "unknown route" });
@@ -36310,12 +36315,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs4, exportName) {
+    function addFormats(ajv, list, fs3, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs4[f]);
+        ajv.addFormat(f, fs3[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -47966,9 +47971,50 @@ var init_discovery = __esm({
   }
 });
 
+// src/paths.ts
+import fs2 from "node:fs";
+import path2 from "node:path";
+function realPath(file2) {
+  const missingParts = [];
+  let existing = path2.resolve(file2);
+  while (!fs2.existsSync(existing)) {
+    const parent = path2.dirname(existing);
+    if (parent === existing) {
+      return path2.resolve(file2);
+    }
+    missingParts.unshift(path2.basename(existing));
+    existing = parent;
+  }
+  try {
+    return path2.join(fs2.realpathSync.native(existing), ...missingParts);
+  } catch {
+    return path2.resolve(file2);
+  }
+}
+function repoRelative(repoRoot, file2, paths = path2) {
+  const relative = paths.relative(repoRoot, paths.resolve(repoRoot, file2));
+  const goesUp = relative === ".." || relative.startsWith(`..${paths.sep}`);
+  const outside = relative === "" || goesUp || paths.isAbsolute(relative);
+  if (outside) {
+    return null;
+  }
+  return relative.split(paths.sep).join("/");
+}
+function samePath(a, b, platform = process.platform) {
+  const ignoresCase = platform === "win32" || platform === "darwin";
+  if (ignoresCase) {
+    return a.toLowerCase() === b.toLowerCase();
+  }
+  return a === b;
+}
+var init_paths = __esm({
+  "src/paths.ts"() {
+    "use strict";
+  }
+});
+
 // src/git.ts
 import { execFile as execFile2 } from "node:child_process";
-import fs2 from "node:fs";
 import { promisify as promisify2 } from "node:util";
 async function git(cwd, args) {
   const { stdout } = await execFileAsync2("git", args, {
@@ -47983,7 +48029,7 @@ async function git(cwd, args) {
 async function findRepoRoot(dir) {
   try {
     const root = (await git(dir, ["rev-parse", "--show-toplevel"])).trim();
-    return fs2.realpathSync.native(root);
+    return realPath(root);
   } catch {
     return null;
   }
@@ -48063,14 +48109,15 @@ async function filesWithRealChanges(root) {
   }
 }
 async function snapshot(root) {
-  const branch = await currentBranch(root);
-  let entries = [];
-  try {
-    entries = parseStatus(await git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
-  } catch {
+  const [branch, status, realChanges] = await Promise.all([
+    currentBranch(root),
+    git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]).catch(() => null),
+    filesWithRealChanges(root)
+  ]);
+  if (status === null) {
     return { branch, files: [], lineEndingOnly: [], truncated: false };
   }
-  const realChanges = await filesWithRealChanges(root);
+  const entries = parseStatus(status);
   const files = [];
   const lineEndingOnly = [];
   for (const entry of entries) {
@@ -48100,6 +48147,7 @@ var execFileAsync2, GIT_TIMEOUT_MS, GIT_MAX_OUTPUT, MAX_REPORTED_FILES;
 var init_git = __esm({
   "src/git.ts"() {
     "use strict";
+    init_paths();
     execFileAsync2 = promisify2(execFile2);
     GIT_TIMEOUT_MS = 1e4;
     GIT_MAX_OUTPUT = 64 * 1024 * 1024;
@@ -48578,52 +48626,11 @@ var init_link = __esm({
   }
 });
 
-// src/paths.ts
-import fs3 from "node:fs";
-import path2 from "node:path";
-function realPath(file2) {
-  const missingParts = [];
-  let existing = path2.resolve(file2);
-  while (!fs3.existsSync(existing)) {
-    const parent = path2.dirname(existing);
-    if (parent === existing) {
-      return path2.resolve(file2);
-    }
-    missingParts.unshift(path2.basename(existing));
-    existing = parent;
-  }
-  try {
-    return path2.join(fs3.realpathSync.native(existing), ...missingParts);
-  } catch {
-    return path2.resolve(file2);
-  }
-}
-function repoRelative(repoRoot, file2, paths = path2) {
-  const relative = paths.relative(repoRoot, paths.resolve(repoRoot, file2));
-  const goesUp = relative === ".." || relative.startsWith(`..${paths.sep}`);
-  const outside = relative === "" || goesUp || paths.isAbsolute(relative);
-  if (outside) {
-    return null;
-  }
-  return relative.split(paths.sep).join("/");
-}
-function samePath(a, b, platform = process.platform) {
-  const ignoresCase = platform === "win32" || platform === "darwin";
-  if (ignoresCase) {
-    return a.toLowerCase() === b.toLowerCase();
-  }
-  return a === b;
-}
-var init_paths = __esm({
-  "src/paths.ts"() {
-    "use strict";
-  }
-});
-
 // src/room.ts
 import http2 from "node:http";
 import os4 from "node:os";
 import path3 from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 function emptyRepo() {
   return { roots: [], remote: "" };
 }
@@ -48636,9 +48643,6 @@ function systemUserName() {
   } catch {
     return process.env.USER ?? process.env.USERNAME ?? "teammate";
   }
-}
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function describeError2(error62) {
   if (error62 instanceof ProtocolError) {
@@ -48751,6 +48755,7 @@ var init_room = __esm({
     ADDRESS = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{1,5}$/;
     COMMIT = /^[0-9a-f]{40,64}$/;
     CocoNode = class {
+      // Changes on leave: teammates remember who left, so rejoining under the old id would be refused.
       memberId = randomId();
       me;
       // Set by the localhost API, so it knows when to publish the session file for hooks.
@@ -49046,9 +49051,11 @@ var init_room = __esm({
         }
         this.members.clear();
         this.outbox.clear();
-        this.inviteSightings.clear();
         this.room = null;
         this.invite = null;
+        this.memberId = randomId();
+        this.me.memberId = this.memberId;
+        this.me.task = "";
         this.stopRoomTimers();
         this.stopNetwork();
         this.onRoomChange?.(false);
@@ -49090,6 +49097,7 @@ var init_room = __esm({
       stopNetwork() {
         this.discovery?.stop();
         this.discovery = null;
+        this.inviteSightings.clear();
         if (this.wss !== null) {
           for (const client of this.wss.clients) {
             client.terminate();
@@ -49178,6 +49186,7 @@ var init_room = __esm({
           heardAt: Date.now(),
           link: null,
           dialAttempt: 0,
+          nextAddress: 0,
           dialTimer: null,
           dialing: false,
           lastDialError: null,
@@ -49255,7 +49264,8 @@ var init_room = __esm({
         if (addresses.length === 0) {
           return;
         }
-        const address = addresses[member.dialAttempt % addresses.length];
+        const index = member.nextAddress % addresses.length;
+        const address = addresses[index];
         member.dialAttempt += 1;
         member.dialing = true;
         try {
@@ -49264,9 +49274,11 @@ var init_room = __esm({
           }
           const link = await dialMember(address, credentials);
           member.dialing = false;
+          member.nextAddress = index;
           this.attachLink(link);
         } catch (error62) {
           member.dialing = false;
+          member.nextAddress = index + 1;
           member.lastDialError = `${address}: ${describeError2(error62)}`;
         }
         if (this.members.get(member.state.memberId) === member) {
@@ -49609,6 +49621,10 @@ var init_room = __esm({
       readInbox() {
         return this.inbox.splice(0);
       }
+      // Puts back messages that were read but never reached anyone (the listener hung up).
+      unreadInbox(messages) {
+        this.inbox.unshift(...messages);
+      }
       // Waits up to `ms` for at least one message (used by `coco-connect listen`).
       waitForMessages(ms) {
         if (this.inbox.length > 0 || this.closed) {
@@ -49836,6 +49852,7 @@ __export(mcp_exports, {
   describeStatus: () => describeStatus,
   runMcp: () => runMcp
 });
+import { setTimeout as sleep2 } from "node:timers/promises";
 function tool(work) {
   return async (args) => {
     try {
@@ -49845,9 +49862,6 @@ function tool(work) {
       return { content: [{ type: "text", text: message }], isError: true };
     }
   };
-}
-function sleep2(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 function listFiles(files) {
   if (files.length === 0) {

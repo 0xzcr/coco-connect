@@ -3,8 +3,8 @@
 // huge repo never freezes the connection to teammates.
 
 import { execFile } from 'node:child_process';
-import fs from 'node:fs';
 import { promisify } from 'node:util';
+import { realPath } from './paths.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,8 +31,10 @@ async function git(cwd: string, args: string[]): Promise<string> {
 export async function findRepoRoot(dir: string): Promise<string | null> {
   try {
     const root = (await git(dir, ['rev-parse', '--show-toplevel'])).trim();
-    // .native also expands Windows short names (C:\Users\RUNNER~1), like realPath() does.
-    return fs.realpathSync.native(root);
+    // The same resolving the edit check applies to file paths, so the two always compare equal.
+    // If the system can't resolve it (some network and virtual drives), we keep git's path
+    // rather than acting as if there were no repo.
+    return realPath(root);
   } catch {
     return null;
   }
@@ -176,16 +178,16 @@ async function filesWithRealChanges(root: string): Promise<Set<string> | null> {
 }
 
 export async function snapshot(root: string): Promise<RepoSnapshot> {
-  const branch = await currentBranch(root);
-
-  let entries: StatusEntry[] = [];
-  try {
-    entries = parseStatus(await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']));
-  } catch {
+  // Independent git runs, started together so a refresh costs one git wait, not three.
+  const [branch, status, realChanges] = await Promise.all([
+    currentBranch(root),
+    git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']).catch(() => null),
+    filesWithRealChanges(root),
+  ]);
+  if (status === null) {
     return { branch, files: [], lineEndingOnly: [], truncated: false };
   }
-
-  const realChanges = await filesWithRealChanges(root);
+  const entries = parseStatus(status);
   const files: string[] = [];
   const lineEndingOnly: string[] = [];
 

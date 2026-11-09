@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { normalizeRemote, parseStatus, repoIdentity, sameRepo, snapshot } from '../src/git.ts';
+import { findRepoRoot, normalizeRemote, parseStatus, repoIdentity, sameRepo, snapshot } from '../src/git.ts';
 import { realPath, repoRelative, samePath } from '../src/paths.ts';
 import { cloneOf, git, makeOrigin, tempDir } from './helpers.ts';
 
@@ -105,4 +106,20 @@ test('paths: symlinked folders resolve, even for files that do not exist yet', (
 
   assert.equal(realPath(path.join(link, 'new', 'deep', 'file.ts')), path.join(real, 'new', 'deep', 'file.ts'));
   assert.equal(realPath(path.join(link, 'file.ts')), path.join(real, 'file.ts'));
+});
+
+// The temp folder as the OS hands it out: C:\Users\RUNNER~1\... on GitHub's Windows runners,
+// /var/folders/... (a symlink to /private/var) on macOS. Both must match what git reports.
+test('paths: a short or symlinked repo path matches the repo root git reports', async (t) => {
+  const given = fs.mkdtempSync(path.join(os.tmpdir(), 'coco-short-'));
+  const resolved = fs.realpathSync.native(given);
+  if (given === resolved) {
+    t.skip('the temp folder has no short name or symlink on this machine');
+    return;
+  }
+  git(given, ['init', '-q']);
+
+  assert.equal(await findRepoRoot(given), resolved);
+  assert.equal(realPath(path.join(given, 'auth.ts')), path.join(resolved, 'auth.ts'));
+  assert.equal(realPath(path.join(given, 'new', 'auth.ts')), path.join(resolved, 'new', 'auth.ts'));
 });

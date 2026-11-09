@@ -15,6 +15,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
   formatCode,
@@ -102,7 +103,8 @@ interface Member {
   state: MemberState;
   heardAt: number;               // when we last got news of them, directly or relayed
   link: Link | null;             // our direct connection to them, if any
-  dialAttempt: number;
+  dialAttempt: number;           // failed dials in a row; sets the backoff
+  nextAddress: number;           // which of their addresses to dial next; moves on only on failure
   dialTimer: NodeJS.Timeout | null;
   dialing: boolean;
   lastDialError: string | null;
@@ -203,10 +205,6 @@ function systemUserName(): string {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function describeError(error: unknown): string {
   if (error instanceof ProtocolError) {
     return error.reason;
@@ -269,7 +267,8 @@ export function parseState(value: unknown): MemberState | null {
 // ---------------------------------------------------------------------------
 
 export class CocoNode {
-  readonly memberId = randomId();
+  // Changes on leave: teammates remember who left, so rejoining under the old id would be refused.
+  memberId = randomId();
   readonly me: MemberState;
 
   // Set by the localhost API, so it knows when to publish the session file for hooks.
@@ -626,9 +625,11 @@ export class CocoNode {
     }
     this.members.clear();
     this.outbox.clear();
-    this.inviteSightings.clear();
     this.room = null;
     this.invite = null;
+    this.memberId = randomId();
+    this.me.memberId = this.memberId;
+    this.me.task = '';
     this.stopRoomTimers();
     this.stopNetwork();
     this.onRoomChange?.(false);
@@ -679,6 +680,9 @@ export class CocoNode {
   private stopNetwork() {
     this.discovery?.stop();
     this.discovery = null;
+    // What Bonjour told us goes with it; otherwise a failed join leaves hosts that may be gone
+    // by the next join, which would try them first.
+    this.inviteSightings.clear();
 
     if (this.wss !== null) {
       for (const client of this.wss.clients) {
@@ -786,6 +790,7 @@ export class CocoNode {
       heardAt: Date.now(),
       link: null,
       dialAttempt: 0,
+      nextAddress: 0,
       dialTimer: null,
       dialing: false,
       lastDialError: null,
@@ -874,8 +879,11 @@ export class CocoNode {
     if (addresses.length === 0) {
       return;
     }
-    // Each attempt tries the next address, so one dead address (a VM adapter) can't block us.
-    const address = addresses[member.dialAttempt % addresses.length];
+    // A failed dial moves on to the next address, so one dead address (a VM adapter) can't
+    // block us. This has its own counter: the backoff count is reset by Bonjour sightings, and
+    // reusing it would keep sending us back to the first few addresses.
+    const index = member.nextAddress % addresses.length;
+    const address = addresses[index];
     member.dialAttempt += 1;
     member.dialing = true;
 
@@ -885,9 +893,12 @@ export class CocoNode {
       }
       const link = await dialMember(address, credentials);
       member.dialing = false;
+      // nextAddress stays on this address, so a later redial tries the one that worked first.
+      member.nextAddress = index;
       this.attachLink(link);
     } catch (error) {
       member.dialing = false;
+      member.nextAddress = index + 1;
       member.lastDialError = `${address}: ${describeError(error)}`;
     }
 
@@ -1291,6 +1302,11 @@ export class CocoNode {
   // Returns and clears unread messages.
   readInbox(): InboxMessage[] {
     return this.inbox.splice(0);
+  }
+
+  // Puts back messages that were read but never reached anyone (the listener hung up).
+  unreadInbox(messages: InboxMessage[]) {
+    this.inbox.unshift(...messages);
   }
 
   // Waits up to `ms` for at least one message (used by `coco-connect listen`).

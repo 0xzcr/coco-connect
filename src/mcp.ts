@@ -3,6 +3,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
 import { startApi } from './api.ts';
 import { diagnose } from './diagnose.ts';
@@ -31,10 +32,6 @@ function tool<Args>(work: (args: Args) => Promise<string> | string) {
       return { content: [{ type: 'text', text: message }], isError: true };
     }
   };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ---------------------------------------------------------------------------

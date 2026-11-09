@@ -95,7 +95,13 @@ async function handle(node: CocoNode, token: string, request: http.IncomingMessa
   if (route === 'GET /wait') {
     const asked = Number(url.searchParams.get('ms') ?? MAX_WAIT_MS);
     const ms = Number.isFinite(asked) ? Math.min(Math.max(asked, 0), MAX_WAIT_MS) : MAX_WAIT_MS;
-    reply(response, 200, await node.waitForMessages(ms));
+    const messages = await node.waitForMessages(ms);
+    if (request.socket.destroyed) {
+      // `listen` was stopped while waiting; keep the messages for the next hook or listener.
+      node.unreadInbox(messages);
+      return;
+    }
+    reply(response, 200, messages);
     return;
   }
 
