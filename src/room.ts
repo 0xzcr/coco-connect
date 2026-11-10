@@ -55,6 +55,7 @@ import {
   MAX_TASK_LENGTH,
   cleanName,
   cleanText,
+  joinFiles,
   type InboxMessage,
 } from './text.ts';
 
@@ -94,6 +95,7 @@ export interface MemberState {
   branch: string;
   task: string;
   files: string[];       // uncommitted changes, relative to the repo root
+  unpushed: string[];    // changed in local commits not pushed yet (not repeating `files`)
   repo: RepoIdentity;
   addresses: string[];   // "ip:port" where this member accepts connections
   version: number;       // goes up with every change; the highest version wins
@@ -109,6 +111,13 @@ interface Member {
   dialing: boolean;
   lastDialError: string | null;
   bonjourAddresses: string[];    // where Bonjour last saw them
+}
+
+interface ReportedTeammate {
+  name: string;
+  online: boolean;
+  task: string;
+  changing: string[];  // files with uncommitted or unpushed changes, if in the same repo
 }
 
 interface Invite {
@@ -150,13 +159,22 @@ export interface TeammateStatus {
   branch: string;
   task: string;
   files: string[];
+  unpushed: string[];
   sameRepo: boolean;
   lastDialError: string | null;
   addresses: string[];
 }
 
 export interface Status {
-  me: { name: string; memberId: string; branch: string; task: string; files: string[]; repoRoot: string | null };
+  me: {
+    name: string;
+    memberId: string;
+    branch: string;
+    task: string;
+    files: string[];
+    unpushed: string[];
+    repoRoot: string | null;
+  };
   inRoom: boolean;
   members: number;
   invite: { code: string; expiresInSeconds: number; wrongCodes: number } | null;
@@ -193,7 +211,7 @@ function emptyRepo(): RepoIdentity {
 }
 
 function placeholderState(memberId: string, name: string): MemberState {
-  return { memberId, name, branch: '', task: '', files: [], repo: emptyRepo(), addresses: [], version: 0 };
+  return { memberId, name, branch: '', task: '', files: [], unpushed: [], repo: emptyRepo(), addresses: [], version: 0 };
 }
 
 // The OS login name. os.userInfo() throws in some containers that have no user entry.
@@ -253,6 +271,7 @@ export function parseState(value: unknown): MemberState | null {
     branch: cleanText(raw.branch, 200),
     task: cleanText(raw.task, MAX_TASK_LENGTH),
     files: stringList(raw.files, MAX_REPORTED_FILES, 1024),
+    unpushed: stringList(raw.unpushed, MAX_REPORTED_FILES, 1024),
     repo: {
       roots: stringList(repo.roots, 8, 64).filter((root) => COMMIT.test(root)),
       remote: cleanText(repo.remote, 300),
@@ -281,6 +300,8 @@ export class CocoNode {
   private options: NodeOptions;
   private room: { id: string; key: Buffer; tag: string } | null = null;
   private members = new Map<string, Member>();
+  // What the agent was last told about each teammate, so room news only says what changed.
+  private reported = new Map<string, ReportedTeammate>();
   private left = new Set<string>();
   private invite: Invite | null = null;
 
@@ -624,6 +645,7 @@ export class CocoNode {
       this.forgetMember(member);
     }
     this.members.clear();
+    this.reported.clear();
     this.outbox.clear();
     this.room = null;
     this.invite = null;
@@ -1148,10 +1170,14 @@ export class CocoNode {
     this.lineEndingOnly = current.lineEndingOnly;
     this.filesTruncated = current.truncated;
 
-    const changed = current.branch !== this.me.branch || current.files.join('\n') !== this.me.files.join('\n');
+    const changed =
+      current.branch !== this.me.branch ||
+      current.files.join('\n') !== this.me.files.join('\n') ||
+      current.unpushed.join('\n') !== this.me.unpushed.join('\n');
     if (changed) {
       this.me.branch = current.branch;
       this.me.files = current.files;
+      this.me.unpushed = current.unpushed;
       this.broadcastState();
     }
   }
@@ -1338,7 +1364,9 @@ export class CocoNode {
 
   // ---- Edit checks --------------------------------------------------------
 
-  // Is `file` one an online teammate in the same repo has uncommitted changes in?
+  // Is `file` one a teammate in the same repo has uncommitted or unpushed changes in?
+  // Teammates who went quiet still count (a sleeping laptop still has its changes) until they
+  // are forgotten after FORGET_AFTER_MS; one who leaves the room stops counting at once.
   check(file: string): CheckResult {
     if (this.room === null || this.repoRoot === null || file === '') {
       return { blocked: false, by: [], file: null };
@@ -1352,17 +1380,100 @@ export class CocoNode {
     const by: string[] = [];
     for (const member of this.members.values()) {
       if (this.blocks(member, relative)) {
-        by.push(member.state.name);
+        by.push(this.isOnline(member) ? member.state.name : `${member.state.name} (offline)`);
       }
     }
     return { blocked: by.length > 0, by, file: relative };
   }
 
   private blocks(member: Member, relative: string): boolean {
-    if (!this.isOnline(member) || !sameRepo(this.me.repo, member.state.repo)) {
-      return false;
+    return this.changingFiles(member).some((theirs) => samePath(theirs, relative));
+  }
+
+  // The files a teammate's work touches that haven't reached the remote yet. Empty for a
+  // teammate in another repo, whose files are a different project's.
+  private changingFiles(member: Member): string[] {
+    if (!sameRepo(this.me.repo, member.state.repo)) {
+      return [];
     }
-    return member.state.files.some((theirs) => samePath(theirs, relative));
+    return [...member.state.files, ...member.state.unpushed];
+  }
+
+  // ---- Room news ----------------------------------------------------------
+
+  // What changed in the room since the last call: who arrived or went, new tasks, and files
+  // teammates started or stopped changing. Hooks hand it to the agent, so agents stay aware
+  // of each other without asking. The status tool calls it too, as it shows the whole room.
+  roomNews(): string[] {
+    const news: string[] = [];
+
+    for (const [memberId, before] of this.reported) {
+      if (!this.members.has(memberId)) {
+        news.push(`${before.name} is no longer in the room.`);
+        this.reported.delete(memberId);
+      }
+    }
+
+    for (const member of this.members.values()) {
+      news.push(...this.memberNews(member));
+    }
+    return news;
+  }
+
+  private memberNews(member: Member): string[] {
+    // Admitted, but we haven't heard their name or work yet.
+    if (member.state.version === 0) {
+      return [];
+    }
+
+    const name = member.state.name;
+    const now: ReportedTeammate = {
+      name,
+      online: this.isOnline(member),
+      task: member.state.task,
+      changing: this.changingFiles(member),
+    };
+    const before = this.reported.get(member.state.memberId);
+    this.reported.set(member.state.memberId, now);
+
+    if (before === undefined) {
+      const offline = now.online ? '' : ' (offline right now)';
+      const task = now.task ? `, working on "${now.task}"` : '';
+      let files = '';
+      if (now.changing.length > 0) {
+        files = `, changing ${joinFiles(now.changing)} (edits to those are blocked for you)`;
+      }
+      return [`${name} is in the room${offline}${task}${files}.`];
+    }
+
+    const news: string[] = [];
+    if (before.online && !now.online) {
+      news.push(
+        `${name} went offline (asleep, or lost the Wi-Fi?). Their changed files stay blocked for up to ` +
+          `${FORGET_AFTER_MS / 60_000} minutes, and messages wait for them.`,
+      );
+    }
+    if (!before.online && now.online) {
+      news.push(`${name} is back online.`);
+    }
+    if (now.task !== before.task && now.task !== '') {
+      news.push(`${name} is now working on "${now.task}".`);
+    }
+
+    const had = new Set(before.changing);
+    const started = now.changing.filter((file) => !had.has(file));
+    if (started.length > 0) {
+      news.push(`${name} started changing ${joinFiles(started)} (edits to those are blocked for you until they push).`);
+    }
+
+    const has = new Set(now.changing);
+    const finished = before.changing.filter((file) => !has.has(file));
+    if (finished.length > 0) {
+      news.push(
+        `${name} is done with ${joinFiles(finished)} (pushed or reverted). If they pushed, pull before you edit those.`,
+      );
+    }
+    return news;
   }
 
   // ---- Status -------------------------------------------------------------
@@ -1386,6 +1497,7 @@ export class CocoNode {
         branch: this.me.branch,
         task: this.me.task,
         files: this.me.files,
+        unpushed: this.me.unpushed,
         repoRoot: this.repoRoot,
       },
       inRoom: this.room !== null,
@@ -1415,6 +1527,7 @@ export class CocoNode {
       branch: member.state.branch,
       task: member.state.task,
       files: member.state.files,
+      unpushed: member.state.unpushed,
       sameRepo: sameRepo(this.me.repo, member.state.repo),
       lastDialError: member.lastDialError,
       addresses: this.dialAddresses(member),
@@ -1434,7 +1547,7 @@ export class CocoNode {
       );
     }
     if (this.filesTruncated) {
-      warnings.push(`More than ${MAX_REPORTED_FILES} changed files; only the first ${MAX_REPORTED_FILES} are shared.`);
+      warnings.push(`More than ${MAX_REPORTED_FILES} changed or unpushed files; only the first ${MAX_REPORTED_FILES} are shared.`);
     }
     if (this.invite !== null && this.invite.wrongCodes >= MAX_WRONG_CODES) {
       warnings.push(

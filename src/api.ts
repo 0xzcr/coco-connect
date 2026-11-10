@@ -87,8 +87,9 @@ async function handle(node: CocoNode, token: string, request: http.IncomingMessa
     return;
   }
 
-  if (route === 'GET /inbox') {
-    reply(response, 200, node.readInbox());
+  // Everything hooks hand the agent: new messages, and what changed in the room.
+  if (route === 'GET /updates') {
+    reply(response, 200, { messages: node.readInbox(), news: node.roomNews() });
     return;
   }
 

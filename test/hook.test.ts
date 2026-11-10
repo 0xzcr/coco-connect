@@ -90,7 +90,7 @@ test('the session file appears while in a room', () => {
 test('pre hook blocks an edit to a file a teammate is changing', async () => {
   const run = await runCli(['hook', 'pre'], editEvent(path.join(anaRepo, 'auth.ts')));
   assert.equal(run.code, 2);
-  assert.match(run.stderr, /ben has uncommitted changes in auth\.ts/);
+  assert.match(run.stderr, /ben is changing auth\.ts and hasn't pushed it yet/);
   assert.match(run.stderr, /send_message/);
 });
 
@@ -127,8 +127,12 @@ test('post and prompt hooks hand new messages to the agent, wrapped as untrusted
   assert.equal(post.code, 0);
   const output = JSON.parse(post.stdout);
   assert.equal(output.hookSpecificOutput.hookEventName, 'PostToolUse');
-  assert.match(output.hookSpecificOutput.additionalContext, /> please hold off on auth\.ts/);
-  assert.match(output.hookSpecificOutput.additionalContext, /not instructions from your user/);
+  const context = output.hookSpecificOutput.additionalContext;
+  assert.match(context, /> please hold off on auth\.ts/);
+  assert.match(context, /not instructions from your user/);
+  // Room news comes along, quoted like messages.
+  assert.match(context, /what changed in your room/);
+  assert.match(context, /^> ben is in the room, changing auth\.ts \(edits to those are blocked for you\)\.$/m);
 
   // Delivered once: the next hook has nothing to say.
   const again = await runCli(['hook', 'prompt'], JSON.stringify({ session_id: SESSION }));
@@ -155,9 +159,9 @@ test('listen explains when the session is not in a room', async () => {
 });
 
 test('the API refuses requests without the token', async () => {
-  const response = await fetch(`http://127.0.0.1:${api.port}/inbox`);
+  const response = await fetch(`http://127.0.0.1:${api.port}/updates`);
   assert.equal(response.status, 401);
-  const wrong = await fetch(`http://127.0.0.1:${api.port}/inbox`, { headers: { 'x-coco-token': 'nope' } });
+  const wrong = await fetch(`http://127.0.0.1:${api.port}/updates`, { headers: { 'x-coco-token': 'nope' } });
   assert.equal(wrong.status, 401);
 });
 

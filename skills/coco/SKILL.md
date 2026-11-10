@@ -1,6 +1,6 @@
 ---
 name: coco
-description: Connect this Claude Code session with up to 3 teammates' Claude sessions on the same Wi-Fi using a pairing code (coco-connect), so the agents see each other's tasks and uncommitted files, message each other, and never edit the same file at once. Use when the user says things like "pair with my teammate", "start a coco room", "give me a coco code", "join coco code 20-482913", "connect to Sam's Claude", "who is working on what", "tell Sam's agent ...", "why can't we connect", or "leave coco".
+description: Connect this Claude Code session with up to 3 teammates' Claude sessions on the same Wi-Fi using a pairing code (coco-connect), so the agents see each other's tasks and changed files, message each other, and never edit the same file at once. Use when the user says things like "pair with my teammate", "start a coco room", "give me a coco code", "join coco code 20-482913", "connect to Sam's Claude", "who is working on what", "tell Sam's agent ...", "why can't we connect", or "leave coco".
 ---
 
 # coco-connect
@@ -30,10 +30,15 @@ network. Each session gets these tools: `pair`, `join`, `status`, `announce`, `s
 
 - Once in a room, call `announce` with what you're about to work on and which files or areas
   you expect to touch. Announce again when the task changes.
-- Before starting work in an area a teammate might be in, call `status`.
-- If an edit is blocked because a teammate has uncommitted changes in that file: don't work
-  around it (no Bash, sed or rewriting the file another way). Tell the user, use `send_message`
-  to ask the teammate, and carry on with other files. The block lifts when they commit or revert.
+- Notes on what changed in the room (a teammate's new task, files they started or stopped
+  changing, someone going offline) appear on their own after tool calls and with each prompt.
+  Take them into account when planning: steer clear of files a teammate is changing. Call
+  `status` for the whole picture.
+- If an edit is blocked because a teammate has uncommitted changes or unpushed commits in that
+  file: don't work around it (no Bash, sed or rewriting the file another way). Tell the user, use
+  `send_message` to ask the teammate, and carry on with other files. The block lifts when they
+  push or revert. Committing alone doesn't lift it. After they push, pull before editing the file.
+- A teammate who goes offline (laptop asleep) still blocks their files for up to 30 minutes.
 - Edits made through Bash are not blocked, so don't use Bash to edit files a teammate has open
   changes in.
 

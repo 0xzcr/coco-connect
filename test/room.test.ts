@@ -57,7 +57,7 @@ test('four sessions pair and join into a full mesh', async () => {
   }
 });
 
-test('uncommitted files block teammates until committed', async () => {
+test('changed files block teammates until pushed, not just committed', async () => {
   const { repos, nodes } = await room(['ana', 'ben', 'cy']);
   const [ana, ben, cy] = nodes;
   try {
@@ -78,11 +78,93 @@ test('uncommitted files block teammates until committed', async () => {
     await waitFor(() => ana.check(anaPath).by.length === 2, 5000, 'two blockers');
     assert.deepEqual(ana.check(anaPath).by.sort(), ['ben', 'cy']);
 
-    // Committing lifts the block.
+    // Committing keeps the block: ana would still conflict with ben when she pulls.
     git(repos[1], ['add', '-A']);
     git(repos[1], ['commit', '-qm', 'auth']);
     await ben.refresh();
+    const bensUnpushed = () => ana.status().teammates.find((teammate) => teammate.name === 'ben')?.unpushed ?? [];
+    await waitFor(() => bensUnpushed().includes('auth.ts'), 5000, 'ana to see ben\'s commit');
+    assert.deepEqual(ana.check(anaPath).by.sort(), ['ben', 'cy']);
+
+    // Pushing lifts it.
+    git(repos[1], ['push', '-q', 'origin', 'HEAD:ben-work']);
+    await ben.refresh();
     await waitFor(() => !ana.check(anaPath).by.includes('ben'), 5000, 'ben\'s block to lift');
+  } finally {
+    await closeAll(nodes);
+  }
+});
+
+// Reads room news the way hooks do over several tool calls, until `done` holds for all of it.
+async function collectNews(node: CocoNode, done: (news: string) => boolean, what: string): Promise<string> {
+  let news = '';
+  const check = () => {
+    news += node.roomNews().map((line) => `${line}\n`).join('');
+    return done(news);
+  };
+  await waitFor(check, 5000, what);
+  return news;
+}
+
+test('room news tells the agent once about tasks, files, and who comes and goes', async () => {
+  const { repos, nodes } = await room(['ana', 'ben', 'cy']);
+  const [ana, ben, cy] = nodes;
+  try {
+    const arrived = (news: string) => /^ben is in the room\.$/m.test(news) && /^cy is in the room\.$/m.test(news);
+    await collectNews(ana, arrived, 'ana to hear who is in the room');
+    assert.deepEqual(ana.roomNews(), [], 'nothing is repeated');
+
+    ben.announceTask('refactor login');
+    await collectNews(ana, (news) => /ben is now working on "refactor login"/.test(news), 'the task');
+
+    fs.writeFileSync(path.join(repos[1], 'auth.ts'), 'ben was here');
+    await ben.refresh();
+    const started = await collectNews(ana, (news) => /ben started changing/.test(news), 'the change');
+    assert.match(started, /^ben started changing auth\.ts \(edits to those are blocked for you until they push\)\.$/m);
+
+    // A commit isn't news: the file is still not pushed.
+    git(repos[1], ['add', '-A']);
+    git(repos[1], ['commit', '-qm', 'auth']);
+    await ben.refresh();
+    await waitFor(() => (ana.status().teammates.find((t) => t.name === 'ben')?.unpushed ?? []).length === 1);
+    assert.deepEqual(ana.roomNews(), []);
+
+    git(repos[1], ['push', '-q', 'origin', 'HEAD:ben-work']);
+    await ben.refresh();
+    const done = await collectNews(ana, (news) => /ben is done with/.test(news), 'the push');
+    assert.match(done, /ben is done with auth\.ts \(pushed or reverted\)\. If they pushed, pull before you edit those\./);
+
+    await cy.leave();
+    await collectNews(ana, (news) => /^cy is no longer in the room\.$/m.test(news), 'cy leaving');
+  } finally {
+    await closeAll(nodes);
+  }
+});
+
+test('a teammate who drops off without a goodbye keeps blocking their files', async () => {
+  const { repos, nodes } = await room(['ana', 'ben']);
+  const [ana, ben] = nodes;
+  try {
+    fs.writeFileSync(path.join(repos[1], 'auth.ts'), 'ben');
+    await ben.refresh();
+    await waitFor(() => ana.check('auth.ts').blocked, 5000, 'ana to see ben\'s change');
+    ana.roomNews();
+
+    // Ben's laptop goes to sleep: the links drop and no goodbye is sent.
+    const benId = ben.memberId;
+    (ben as unknown as { flood: () => void }).flood = () => {};
+    await ben.leave();
+    await waitFor(() => directLinks(ana) === 0, 5000, 'the link to drop');
+
+    // Ana counts ben as offline after 45 seconds without news; pretend they have passed.
+    const anaMembers = (ana as unknown as { members: Map<string, { heardAt: number }> }).members;
+    const bensEntry = anaMembers.get(benId);
+    assert.ok(bensEntry);
+    bensEntry.heardAt -= 60_000;
+
+    assert.equal(ana.status().teammates[0].online, false);
+    assert.deepEqual(ana.check('auth.ts'), { blocked: true, by: ['ben (offline)'], file: 'auth.ts' });
+    assert.match(ana.roomNews().join('\n'), /^ben went offline .* stay blocked for up to 30 minutes/m);
   } finally {
     await closeAll(nodes);
   }

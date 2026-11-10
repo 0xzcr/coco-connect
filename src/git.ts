@@ -112,8 +112,9 @@ export function sameRepo(a: RepoIdentity, b: RepoIdentity): boolean {
 export interface RepoSnapshot {
   branch: string;
   files: string[];          // changed files to tell teammates about, relative to the repo root
+  unpushed: string[];       // changed in local commits no remote has yet; never repeats `files`
   lineEndingOnly: string[]; // changed only in line endings (CRLF vs LF); left out of `files`
-  truncated: boolean;       // true if there were more than MAX_REPORTED_FILES
+  truncated: boolean;       // true if `files` and `unpushed` together had more than MAX_REPORTED_FILES
 }
 
 export async function currentBranch(root: string): Promise<string> {
@@ -177,15 +178,35 @@ async function filesWithRealChanges(root: string): Promise<Set<string> | null> {
   }
 }
 
+// Files changed in commits on this branch that no remote has yet. A teammate who commits is
+// still about to conflict with you; only once they push can you pull their work first.
+// Without any remote nothing can be pushed, and every commit would count, so the list is empty.
+async function unpushedFiles(root: string): Promise<string[]> {
+  try {
+    const remotes = await git(root, ['for-each-ref', '--count=1', '--format=x', 'refs/remotes']);
+    if (remotes.trim() === '') {
+      return [];
+    }
+    // One path per changed file per commit, NUL-separated, so the same path can repeat.
+    const output = await git(root, ['log', 'HEAD', '--not', '--remotes', '--name-only', '--format=', '-z']);
+    const paths = new Set(output.split('\0').filter((path) => path !== ''));
+    return [...paths].sort();
+  } catch {
+    // No commits yet.
+    return [];
+  }
+}
+
 export async function snapshot(root: string): Promise<RepoSnapshot> {
-  // Independent git runs, started together so a refresh costs one git wait, not three.
-  const [branch, status, realChanges] = await Promise.all([
+  // Independent git runs, started together so a refresh costs one git wait, not four.
+  const [branch, status, realChanges, committed] = await Promise.all([
     currentBranch(root),
     git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all']).catch(() => null),
     filesWithRealChanges(root),
+    unpushedFiles(root),
   ]);
   if (status === null) {
-    return { branch, files: [], lineEndingOnly: [], truncated: false };
+    return { branch, files: [], unpushed: [], lineEndingOnly: [], truncated: false };
   }
   const entries = parseStatus(status);
   const files: string[] = [];
@@ -201,11 +222,19 @@ export async function snapshot(root: string): Promise<RepoSnapshot> {
   }
 
   files.sort();
+  const shownFiles = files.slice(0, MAX_REPORTED_FILES);
+
+  // A file with both uncommitted and unpushed changes is listed once, under `files`.
+  const uncommitted = new Set(files);
+  const unpushed = committed.filter((path) => !uncommitted.has(path));
+  const space = MAX_REPORTED_FILES - shownFiles.length;
+
   return {
     branch,
-    files: files.slice(0, MAX_REPORTED_FILES),
+    files: shownFiles,
+    unpushed: unpushed.slice(0, space),
     lineEndingOnly,
-    truncated: files.length > MAX_REPORTED_FILES,
+    truncated: files.length + unpushed.length > MAX_REPORTED_FILES,
   };
 }
 

@@ -1,10 +1,10 @@
 // Claude Code hooks. Claude Code runs `coco-connect hook <kind>` with event JSON on stdin.
 //
-//   pre     PreToolUse on file edits: blocks the edit if an online teammate in the same repo has
-//           uncommitted changes in that file.
+//   pre     PreToolUse on file edits: blocks the edit if a teammate in the same repo has
+//           uncommitted or unpushed changes in that file.
 //   post    PostToolUse on edits and Bash: re-reads git so teammates see the change, and hands
-//           the agent any new teammate messages.
-//   prompt  UserPromptSubmit: hands the agent any new teammate messages.
+//           the agent new teammate messages and what changed in the room.
+//   prompt  UserPromptSubmit: hands the agent new teammate messages and room changes.
 //
 // Every hook fails open: if anything goes wrong (no room, node gone, timeout), the agent
 // carries on as if coco-connect weren't installed. Plugin hooks run in every project, so the
@@ -12,7 +12,7 @@
 
 import { callSession } from './api.ts';
 import { findSession, type SessionEntry } from './registry.ts';
-import { formatInbox, type InboxMessage } from './text.ts';
+import { formatInbox, formatRoomNews, type InboxMessage } from './text.ts';
 
 const MAX_STDIN_BYTES = 4 * 1024 * 1024;
 const CHECK_TIMEOUT_MS = 1500;
@@ -67,33 +67,39 @@ async function preEdit(entry: SessionEntry, input: HookInput): Promise<number> {
   }
 
   // Exit code 2 blocks the tool call, and Claude Code shows stderr to the agent as the reason.
-  const who = (result.by as string[]).join(' and ');
+  const by = result.by as string[];
+  const who = by.join(' and ');
+  const verb = by.length > 1 ? 'are' : 'is';
   process.stderr.write(
-    `coco-connect: ${who} has uncommitted changes in ${result.file}, so editing it now would conflict. ` +
+    `coco-connect: ${who} ${verb} changing ${result.file} and hasn't pushed it yet, so editing it now would conflict. ` +
       `Don't work around this. Use the send_message tool to ask ${who} about it, or carry on with other files. ` +
-      'The block lifts once they commit or revert the file.',
+      'The block lifts once they push or revert the file. If they push, pull before you edit it.',
   );
   return 2;
 }
 
-// Prints new messages as extra context for the agent, in the JSON form Claude Code expects.
-async function deliverInbox(entry: SessionEntry, eventName: string) {
-  const messages = (await callSession(entry, 'GET', '/inbox', CHECK_TIMEOUT_MS)) as InboxMessage[];
-  if (messages.length === 0) {
+// Prints room changes and new messages as extra context for the agent, in the JSON form
+// Claude Code expects. Prints nothing if there's no news.
+async function deliverUpdates(entry: SessionEntry, eventName: string) {
+  const updates = await callSession(entry, 'GET', '/updates', CHECK_TIMEOUT_MS);
+  const news = formatRoomNews(updates.news as string[]);
+  const messages = formatInbox(updates.messages as InboxMessage[]);
+  const context = [news, messages].filter((part) => part !== '').join('\n\n');
+  if (context === '') {
     return;
   }
-  const output = { hookSpecificOutput: { hookEventName: eventName, additionalContext: formatInbox(messages) } };
+  const output = { hookSpecificOutput: { hookEventName: eventName, additionalContext: context } };
   process.stdout.write(JSON.stringify(output));
 }
 
 async function postTool(entry: SessionEntry): Promise<number> {
   await callSession(entry, 'POST', '/refresh', REFRESH_TIMEOUT_MS);
-  await deliverInbox(entry, 'PostToolUse');
+  await deliverUpdates(entry, 'PostToolUse');
   return 0;
 }
 
 async function promptSubmit(entry: SessionEntry): Promise<number> {
-  await deliverInbox(entry, 'UserPromptSubmit');
+  await deliverUpdates(entry, 'UserPromptSubmit');
   return 0;
 }
 

@@ -89,7 +89,7 @@ test('end to end: pair, a teammate joins, blocks, messages both ways, leave', as
   await peer.refresh();
   await waitFor(() => hook('pre', { tool_input: { file_path: path.join(hostRepo, 'shared.ts') } }).status === 2, 8000);
   const blocked = hook('pre', { tool_input: { file_path: path.join(hostRepo, 'shared.ts') } });
-  assert.match(blocked.stderr, /peer has uncommitted changes in shared\.ts/);
+  assert.match(blocked.stderr, /peer is changing shared\.ts/);
   assert.equal(hook('pre', { tool_input: { file_path: path.join(hostRepo, 'free.ts') } }).status, 0);
 
   // Messages both ways.

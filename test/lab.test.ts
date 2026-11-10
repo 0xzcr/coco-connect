@@ -192,6 +192,20 @@ class Laptop {
     return run.status === 2 ? run.stderr : null;
   }
 
+  // Runs the prompt hook as Claude Code does when the user sends a prompt. Returns the room
+  // news and messages it hands the agent, or '' if there were none.
+  promptHook(): string {
+    const event = { session_id: SESSION, prompt: 'carry on' };
+    const run = spawnSync('docker', ['exec', '-i', ...SESSION_ENV, this.container, 'node', BUNDLE, 'hook', 'prompt'], {
+      input: JSON.stringify(event),
+      encoding: 'utf8',
+    });
+    if (run.stdout.trim() === '') {
+      return '';
+    }
+    return JSON.parse(run.stdout).hookSpecificOutput.additionalContext;
+  }
+
   async waitUntilBlocked(file: string) {
     const blocked = () => this.hookBlocks(file) !== null;
     await waitFor(blocked, WAIT_MS, `${this.name}'s edit to ${file} to be blocked`, POLL_MS);
@@ -322,12 +336,15 @@ async function withLab(run: (lab: Lab) => Promise<void>) {
 // What every working pair of laptops must be able to do
 // ---------------------------------------------------------------------------
 
-// The everyday loop, both ways: an uncommitted change blocks the other's edit, and messages arrive.
+// The everyday loop, both ways: a change blocks the other's edit, the other's agent is told
+// about it without asking, and messages arrive.
 async function checkWorkingTogether(a: Laptop, b: Laptop) {
   await a.edit(`${a.name}.txt`);
   await b.waitUntilBlocked(`${a.name}.txt`);
-  assert.match(b.hookBlocks(`${a.name}.txt`) ?? '', new RegExp(`${a.name} has uncommitted changes`));
+  assert.match(b.hookBlocks(`${a.name}.txt`) ?? '', new RegExp(`${a.name} is changing ${a.name}\\.txt`));
   assert.equal(b.hookBlocks('untouched.txt'), null);
+  // "started changing" if b already knew a, or "is in the room, changing" if a is new to b.
+  assert.match(b.promptHook(), new RegExp(`> ${a.name} (started changing|is in the room.*changing) .*${a.name}\\.txt`));
 
   await b.edit(`${b.name}.txt`);
   await a.waitUntilBlocked(`${b.name}.txt`);
@@ -516,9 +533,14 @@ describe('network lab', { skip: !enabled && 'set COCO_TEST_LAB=1 (needs Docker):
       await wes.join(invite.code);
       await ana.waitToSee('wes', /online \(direct\)/);
 
+      await wes.edit('wes.txt');
+      await ana.waitUntilBlocked('wes.txt');
+
       wes.sleep();
       await ana.waitToSee('wes', /offline/, 90_000);
       assert.match(await ana.send('are you back?', 'wes'), /offline; it will be delivered/);
+      // Wes's changes are still on the sleeping laptop, so they still block.
+      assert.match(ana.hookBlocks('wes.txt') ?? '', /wes \(offline\) is changing wes\.txt/);
       assert.match(await ana.call('diagnose'), /wes at 10\.77\.0\.31:\d+: no answer/);
 
       wes.wake();

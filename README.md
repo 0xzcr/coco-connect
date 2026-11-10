@@ -2,8 +2,8 @@
 
 Up to four people, four Claude Code sessions, one repo. coco-connect is a Claude Code plugin that
 pairs sessions on the same Wi-Fi with a short code. The agents then see what each other is
-working on (branch, task, files with uncommitted changes), message each other, and are stopped
-from editing a file a teammate has uncommitted changes in. Mac and Windows, in any mix.
+working on (branch, task, files with changes not pushed yet), are told when that changes, message
+each other, and are stopped from editing a file a teammate is changing. Mac and Windows, in any mix.
 No server, no account, nothing to run by hand.
 
 ```
@@ -28,9 +28,10 @@ Just ask Claude.
 
 - **Host:** "start a coco room". Claude shows a code like `20-482913`. Read it out.
 - **Everyone else:** "join coco code 20-482913".
-- Then work as usual. Agents announce their tasks, and an edit to a file a teammate is changing
-  is blocked with a note to coordinate. Messages show up on their own, e.g. "tell Sam's agent
-  I'm done with auth.ts".
+- Then work as usual. Agents announce their tasks and hear about each other's: a new task, or
+  files a teammate started or stopped changing, shows up in the agent's context on its own. An
+  edit to a file a teammate is changing is blocked with a note to coordinate. Messages show up
+  on their own too, e.g. "tell Sam's agent I'm done with auth.ts".
 - "who's working on what?" shows the room. "leave coco" leaves it, and so does closing Claude Code.
 
 If the code alone can't find the host (some networks block discovery), the host's screen also
@@ -67,12 +68,18 @@ Windows network profile and the macOS permission, and says what to fix.
   direction works (a Windows laptop that refuses incoming connections can still dial out).
   If two laptops can't reach each other at all, state and messages are passed through a third.
 - **What's shared.** Your name, branch, announced task, the paths of files with uncommitted
-  changes (from `git status`), and messages. Never file contents.
+  changes (from `git status`) or changed in commits no remote has yet, and messages. Never file
+  contents. Without any git remote, only uncommitted changes count.
+- **Staying aware.** After each tool call and with each prompt, hooks give the agent a short note
+  of what changed in the room since it last looked: arrivals, departures, new tasks, files a
+  teammate started or stopped changing. Nothing is said when nothing changed.
 - **Blocking.** A PreToolUse hook on Edit/Write/MultiEdit/NotebookEdit asks the node whether
-  an online teammate *in the same repo* has uncommitted changes in that file. The repo counts as
-  the same if the clones share a first commit or their origin URLs match. Files that differ only
-  in line endings (CRLF vs LF) are not reported, so a Windows `autocrlf` mix-up can't block the
-  whole repo.
+  a teammate *in the same repo* has uncommitted or unpushed changes in that file. Committing
+  doesn't lift the block, since the two of you would still conflict on pull; pushing does. A
+  teammate who goes offline (asleep, Wi-Fi drop) keeps blocking their files for up to 30 minutes;
+  one who leaves the room stops at once. The repo counts as the same if the clones share a first
+  commit or their origin URLs match. Files that differ only in line endings (CRLF vs LF) are not
+  reported, so a Windows `autocrlf` mix-up can't block the whole repo.
 - **Messages** are delivered once and retried until acknowledged. A teammate who drops off
   (sleep, Wi-Fi change) gets them on reconnecting, for up to an hour. They reach the agent
   through hooks, after tool calls and on each prompt, wrapped so the agent treats them as notes

@@ -35,7 +35,37 @@ test('snapshot reports real changes and sets line-ending-only changes aside', ()
     assert.deepEqual(result.files, ['docs.md', 'new file.txt', 'real.txt']);
     assert.deepEqual(result.lineEndingOnly, ['crlf.txt']);
     assert.equal(result.truncated, false);
+    assert.deepEqual(result.unpushed, [], 'with no remote, nothing counts as unpushed');
   });
+});
+
+test('snapshot lists files in commits no remote has yet, until they are pushed', async () => {
+  const repo = cloneOf(makeOrigin());
+  fs.writeFileSync(path.join(repo, 'auth.ts'), 'a');
+  fs.writeFileSync(path.join(repo, 'both.ts'), 'b');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'one']);
+  fs.writeFileSync(path.join(repo, 'auth.ts'), 'a2');
+  git(repo, ['commit', '-qam', 'two']);
+  fs.writeFileSync(path.join(repo, 'both.ts'), 'b2');
+
+  let result = await snapshot(repo);
+  assert.deepEqual(result.files, ['both.ts']);
+  assert.deepEqual(result.unpushed, ['auth.ts'], 'listed once, and never repeating an uncommitted file');
+
+  git(repo, ['commit', '-qam', 'three']);
+  git(repo, ['push', '-q', 'origin', 'HEAD:work']);
+  result = await snapshot(repo);
+  assert.deepEqual(result.files, []);
+  assert.deepEqual(result.unpushed, []);
+
+  // A new branch that was never pushed: only its own commits count.
+  git(repo, ['checkout', '-qb', 'feature']);
+  fs.writeFileSync(path.join(repo, 'new.ts'), 'n');
+  git(repo, ['add', '-A']);
+  git(repo, ['commit', '-qm', 'four']);
+  result = await snapshot(repo);
+  assert.deepEqual(result.unpushed, ['new.ts']);
 });
 
 test('snapshot works in a repo with no commits, and outside git', async () => {
