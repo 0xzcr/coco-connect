@@ -187,8 +187,10 @@ async function unpushedFiles(root: string): Promise<string[]> {
     if (remotes.trim() === '') {
       return [];
     }
-    // One path per changed file per commit, NUL-separated, so the same path can repeat.
-    const output = await git(root, ['log', 'HEAD', '--not', '--remotes', '--name-only', '--format=', '-z']);
+    // One path per changed file per commit, NUL-separated, so the same path can repeat. As with
+    // uncommitted files, a commit that only changed line endings (autocrlf) doesn't count.
+    const args = ['log', 'HEAD', '--not', '--remotes', '--name-only', '--format=', '-z', '--ignore-cr-at-eol'];
+    const output = await git(root, args);
     const paths = new Set(output.split('\0').filter((path) => path !== ''));
     return [...paths].sort();
   } catch {

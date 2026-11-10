@@ -43,6 +43,9 @@ test('snapshot lists files in commits no remote has yet, until they are pushed',
   const repo = cloneOf(makeOrigin());
   fs.writeFileSync(path.join(repo, 'auth.ts'), 'a');
   fs.writeFileSync(path.join(repo, 'both.ts'), 'b');
+  // Only line endings change here, as a Windows checkout with autocrlf does; that isn't listed.
+  const readme = path.join(repo, 'README.md');
+  fs.writeFileSync(readme, fs.readFileSync(readme, 'utf8').replace(/\r?\n/g, '\r\n'));
   git(repo, ['add', '-A']);
   git(repo, ['commit', '-qm', 'one']);
   fs.writeFileSync(path.join(repo, 'auth.ts'), 'a2');

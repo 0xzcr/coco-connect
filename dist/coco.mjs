@@ -48127,7 +48127,8 @@ async function unpushedFiles(root) {
     if (remotes.trim() === "") {
       return [];
     }
-    const output2 = await git(root, ["log", "HEAD", "--not", "--remotes", "--name-only", "--format=", "-z"]);
+    const args = ["log", "HEAD", "--not", "--remotes", "--name-only", "--format=", "-z", "--ignore-cr-at-eol"];
+    const output2 = await git(root, args);
     const paths = new Set(output2.split("\0").filter((path4) => path4 !== ""));
     return [...paths].sort();
   } catch {
